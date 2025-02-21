@@ -25,6 +25,13 @@ from botorch.acquisition.knowledge_gradient import qKnowledgeGradient
 from botorch.acquisition.multi_objective.hypervolume_knowledge_gradient import (
     qHypervolumeKnowledgeGradient,
 )
+from botorch.acquisition.multi_objective.joint_entropy_search import (
+    qLowerBoundMultiObjectiveJointEntropySearch,
+)
+from botorch.acquisition.multi_objective.predictive_entropy_search import (
+    qMultiObjectivePredictiveEntropySearch,
+)
+
 from botorch.acquisition.predictive_entropy_search import qPredictiveEntropySearch
 from botorch.exceptions import InputDataError, UnsupportedError
 from botorch.exceptions.errors import CandidateGenerationError
@@ -178,7 +185,13 @@ class OptimizeAcqfInputs:
         elif isinstance(self.acq_function, qHypervolumeKnowledgeGradient):
             return gen_one_shot_hvkg_initial_conditions
         elif isinstance(
-            self.acq_function, (qJointEntropySearch, qPredictiveEntropySearch)
+            self.acq_function,
+            (
+                qJointEntropySearch,
+                qPredictiveEntropySearch,
+                qMultiObjectivePredictiveEntropySearch,
+                qLowerBoundMultiObjectiveJointEntropySearch,
+            ),
         ):
             return gen_optimal_input_initial_conditions
         return gen_batch_initial_conditions

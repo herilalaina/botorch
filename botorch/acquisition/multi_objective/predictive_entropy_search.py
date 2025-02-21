@@ -98,7 +98,7 @@ class qMultiObjectivePredictiveEntropySearch(AcquisitionFunction):
     def __init__(
         self,
         model: Model,
-        pareto_sets: Tensor,
+        optimal_inputs: Tensor,
         maximize: bool = True,
         X_pending: Tensor | None = None,
         max_ep_iterations: int = 250,
@@ -110,7 +110,7 @@ class qMultiObjectivePredictiveEntropySearch(AcquisitionFunction):
 
         Args:
             model: A fitted batched model with `M` number of outputs.
-            pareto_sets: A `num_pareto_samples x P x d`-dim tensor containing the
+            optimal_inputs: A `num_pareto_samples x P x d`-dim tensor containing the
                 Pareto optimal set of inputs, where `P` is the number of pareto
                 optimal points. The points in each sample have to be discrete
                 otherwise expectation propagation will fail.
@@ -146,19 +146,19 @@ class qMultiObjectivePredictiveEntropySearch(AcquisitionFunction):
                 "Batch GP models (e.g. fantasized models) are not supported."
             )
 
-        if pareto_sets.ndim != 3 or pareto_sets.shape[-1] != train_X.shape[-1]:
+        if optimal_inputs.ndim != 3 or optimal_inputs.shape[-1] != train_X.shape[-1]:
             raise UnsupportedError(
                 "The Pareto set should have a shape of "
                 "`num_pareto_samples x num_pareto_points x input_dim`."
             )
         else:
-            self.pareto_sets = pareto_sets
+            self.optimal_inputs = optimal_inputs
 
         # add the pareto set to the existing training data
-        self.num_pareto_samples = pareto_sets.shape[0]
+        self.num_pareto_samples = optimal_inputs.shape[0]
 
         self.augmented_X = torch.cat(
-            [train_X.repeat(self.num_pareto_samples, 1, 1), self.pareto_sets], dim=-2
+            [train_X.repeat(self.num_pareto_samples, 1, 1), self.optimal_inputs], dim=-2
         )
         self.max_ep_iterations = max_ep_iterations
         self.ep_jitter = ep_jitter
@@ -187,7 +187,7 @@ class qMultiObjectivePredictiveEntropySearch(AcquisitionFunction):
         tkwargs = {"dtype": train_X.dtype, "device": train_X.device}
         N = len(train_X)
         num_pareto_samples = self.num_pareto_samples
-        P = self.pareto_sets.shape[-2]
+        P = self.optimal_inputs.shape[-2]
 
         # initialize the predictive natural mean and variances
         (
@@ -346,14 +346,16 @@ class qMultiObjectivePredictiveEntropySearch(AcquisitionFunction):
             N = len(self.model.train_inputs[0][0])
         else:
             N = len(self.model.train_inputs[0])
-        P = self.pareto_sets.shape[-2]
+        P = self.optimal_inputs.shape[-2]
         num_pareto_samples = self.num_pareto_samples
         ###########################################################################
         # AUGMENT X WITH THE SAMPLED PARETO SET
         ###########################################################################
         new_shape = batch_shape + torch.Size([num_pareto_samples]) + X.shape[-2:]
         expanded_X = X.unsqueeze(-3).expand(new_shape)
-        expanded_ps = self.pareto_sets.expand(X.shape[0:-2] + self.pareto_sets.shape)
+        expanded_ps = self.optimal_inputs.expand(
+            X.shape[0:-2] + self.optimal_inputs.shape
+        )
         # `batch_shape x num_pareto_samples x (q + P) x d`
         aug_X = torch.cat([expanded_X, expanded_ps], dim=-2)
 
