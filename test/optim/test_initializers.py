@@ -41,13 +41,12 @@ from botorch.optim.initializers import (
     sample_perturbed_subset_dims,
     sample_points_around_best,
     sample_q_batches_from_polytope,
-    sample_truncated_normal_perturbations,
     transform_constraints,
     transform_inter_point_constraint,
     transform_intra_point_constraint,
 )
 from botorch.sampling.normal import IIDNormalSampler
-from botorch.utils.sampling import draw_sobol_samples, manual_seed, unnormalize
+from botorch.utils.sampling import manual_seed, unnormalize
 from botorch.utils.testing import (
     _get_max_violation_of_bounds,
     _get_max_violation_of_constraints,
