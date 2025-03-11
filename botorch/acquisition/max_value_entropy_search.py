@@ -31,9 +31,9 @@ References
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Callable
 from copy import deepcopy
 from math import log
+from typing import Callable
 
 import numpy as np
 import torch
@@ -65,6 +65,8 @@ class MaxValueBase(AcquisitionFunction, ABC):
 
     Subclasses need to implement `_sample_max_values` and _compute_information_gain`
     methods.
+
+    :meta private:
     """
 
     def __init__(
@@ -74,6 +76,7 @@ class MaxValueBase(AcquisitionFunction, ABC):
         posterior_transform: PosteriorTransform | None = None,
         maximize: bool = True,
         X_pending: Tensor | None = None,
+        input_max_values: Tensor | None = None,
     ) -> None:
         r"""Single-outcome max-value entropy search-based acquisition functions.
 
@@ -94,21 +97,16 @@ class MaxValueBase(AcquisitionFunction, ABC):
                 "Must specify a posterior transform when using a multi-output model."
             )
 
-        # Batched GP models are not currently supported
-        try:
-            batch_shape = model.batch_shape
-        except NotImplementedError:
-            batch_shape = torch.Size()
-        if len(batch_shape) > 0:
-            raise NotImplementedError(
-                "Batched GP models (e.g., fantasized models) are not yet "
-                f"supported by `{self.__class__.__name__}`."
-            )
         self.num_mv_samples = num_mv_samples
         self.posterior_transform = posterior_transform
         self.maximize = maximize
         self.weight = 1.0 if maximize else -1.0
+        self.input_max_values = input_max_values
         self.set_X_pending(X_pending)
+        if self.input_max_values is not None:
+            self.num_samples = self.input_max_values.shape[0]
+            self.num_models = self.input_max_values.shape[1]
+        
 
     @t_batch_mode_transform(expected_q=1)
     def forward(self, X: Tensor) -> Tensor:
@@ -121,20 +119,20 @@ class MaxValueBase(AcquisitionFunction, ABC):
         Returns:
             A `batch_shape`-dim Tensor of MVE values at the given design points `X`.
         """
-        # Compute the posterior, posterior mean, variance and std.
+        # Compute the posterior, posterior mean, variance and std
         posterior = self.model.posterior(
-            X.unsqueeze(-3),
+            X,
             observation_noise=False,
             posterior_transform=self.posterior_transform,
         )
-        # batch_shape x num_fantasies x (m)
+        # batch_shape x num_fantasies x (m) x 1
         mean = self.weight * posterior.mean.squeeze(-1).squeeze(-1)
         variance = posterior.variance.clamp_min(CLAMP_LB).view_as(mean)
         ig = self._compute_information_gain(
             X=X, mean_M=mean, variance_M=variance, covar_mM=variance.unsqueeze(-1)
         )
-        # Average over fantasies, ig is of shape `num_fantasies x batch_shape x (m)`.
-        return ig.mean(dim=0)
+        
+        return ig.mean(dim=0)  # average over fantasies
 
     def set_X_pending(self, X_pending: Tensor | None = None) -> None:
         r"""Set pending design points.
@@ -148,7 +146,11 @@ class MaxValueBase(AcquisitionFunction, ABC):
         """
         if X_pending is not None:
             X_pending = X_pending.detach().clone()
-        self._sample_max_values(num_samples=self.num_mv_samples, X_pending=X_pending)
+        if self.input_max_values is None:
+            self._sample_max_values(num_samples=self.num_mv_samples, X_pending=X_pending)
+        else:
+            self.posterior_max_values = self.input_max_values.transpose(0, -1)
+            
         self.X_pending = X_pending
 
     # ------- Abstract methods that need to be implemented by subclasses ------- #
@@ -172,12 +174,11 @@ class MaxValueBase(AcquisitionFunction, ABC):
     @abstractmethod
     def _sample_max_values(
         self, num_samples: int, X_pending: Tensor | None = None
-    ) -> None:
+    ) -> Tensor:
         r"""Draw samples from the posterior over maximum values.
 
-        These samples are used to compute Monte Carlo approximations of expectations
-        over the posterior over the function maximum. This function sets
-        `self.posterior_max_values`.
+        These samples are used to compute Monte Carlo approximations of expecations
+        over the posterior over the function maximum.
 
         Args:
             num_samples: The number of samples to draw.
@@ -209,6 +210,7 @@ class DiscreteMaxValueBase(MaxValueBase):
         maximize: bool = True,
         X_pending: Tensor | None = None,
         train_inputs: Tensor | None = None,
+        input_max_values: Tensor | None = None,
     ) -> None:
         r"""Single-outcome MES-like acquisition functions based on discrete MV sampling.
 
@@ -229,36 +231,28 @@ class DiscreteMaxValueBase(MaxValueBase):
                 Not required if the model is an instance of a GPyTorch ExactGP model.
         """
         self.use_gumbel = use_gumbel
-
-        if train_inputs is None and hasattr(model, "train_inputs"):
-            train_inputs = model.train_inputs[0]
-        if train_inputs is not None:
-            if train_inputs.ndim > 2:
-                raise NotImplementedError(
-                    "Batch GP models (e.g. fantasized models) "
-                    "are not yet supported by `MaxValueBase`"
-                )
+        if input_max_values is None and train_inputs is not None:
             train_inputs = match_batch_shape(train_inputs, candidate_set)
             candidate_set = torch.cat([candidate_set, train_inputs], dim=0)
 
         self.candidate_set = candidate_set
-
+        
         super().__init__(
             model=model,
             num_mv_samples=num_mv_samples,
             posterior_transform=posterior_transform,
             maximize=maximize,
             X_pending=X_pending,
+            input_max_values=input_max_values,
         )
 
     def _sample_max_values(
         self, num_samples: int, X_pending: Tensor | None = None
-    ) -> None:
+    ) -> Tensor:
         r"""Draw samples from the posterior over maximum values on a discrete set.
 
-        These samples are used to compute Monte Carlo approximations of expectations
-        over the posterior over the function maximum. This function sets
-        `self.posterior_max_values`.
+        These samples are used to compute Monte Carlo approximations of expecations
+        over the posterior over the function maximum.
 
         Args:
             num_samples: The number of samples to draw.
@@ -269,6 +263,9 @@ class DiscreteMaxValueBase(MaxValueBase):
             A `num_samples x num_fantasies` Tensor of posterior max value samples
             (`num_fantasies=1` for non-fantasized models).
         """
+        if self.input_max_values is not None:
+            self.posterior_max_values = self.input_max_values
+            return
         if self.use_gumbel:
             sample_max_values = _sample_max_value_Gumbel
         else:
@@ -389,8 +386,7 @@ class qMaxValueEntropy(DiscreteMaxValueBase, MCSamplerMixin):
         if X_pending is not None:
             # fantasize the model and use this as the new model
             self.model = init_model.fantasize(
-                X=X_pending,
-                sampler=self.fantasies_sampler,
+                X=X_pending, sampler=self.fantasies_sampler, observation_noise=True
             )
         else:
             self.model = init_model
@@ -559,52 +555,58 @@ class qLowerBoundMaxValueEntropy(DiscreteMaxValueBase):
         """
         # TODO: give the Posterior API an add_observation_noise function to avoid
         # doing posterior computations twice
-
         # compute the mean_m, variance_m with noisy observation
-        posterior_m = self.model.posterior(
+        prev_m = self.model.posterior(
             X, observation_noise=True, posterior_transform=self.posterior_transform
         )
-        mean_m = self.weight * posterior_m.mean.squeeze(-1)
+        noiseless_var = self.model.posterior(
+            X, observation_noise=False, posterior_transform=self.posterior_transform
+        ).variance.squeeze(-1)
+        
+        # Compute the mixture mean and variance
+        mean_m = prev_m.mean.squeeze(-1)
+        cond_variances = prev_m.variance.squeeze(-1)
+
         # batch_shape x 1
-        variance_m = posterior_m.variance.clamp_min(CLAMP_LB).squeeze(-1)
+        variance_m = cond_variances.clamp_min(CLAMP_LB)
         # batch_shape x 1
         check_no_nans(variance_m)
-
         # get stdv of noiseless variance
-        stdv = variance_M.sqrt()
+        stdv = noiseless_var.sqrt()
         # batch_shape x 1
 
-        # define normal distribution to compute cdf and pdf
         normal = torch.distributions.Normal(
             torch.zeros(1, device=X.device, dtype=X.dtype),
             torch.ones(1, device=X.device, dtype=X.dtype),
         )
 
         # prepare max value quantities required by GIBBON
-        mvs = torch.transpose(self.posterior_max_values, 0, 1)
-        # 1 x s_M
+        mvs = self.posterior_max_values.unsqueeze(-3)
         normalized_mvs = (mvs - mean_m) / stdv
-        # batch_shape x s_M
-
         cdf_mvs = normal.cdf(normalized_mvs).clamp_min(CLAMP_LB)
         pdf_mvs = torch.exp(normal.log_prob(normalized_mvs))
         ratio = pdf_mvs / cdf_mvs
-        check_no_nans(ratio)
+        
+        # These are given as input to _compute_information_gain and have 
+        # drastically different shapes (not sure exactly why)
+        variance_M = variance_M.unsqueeze(-1)
 
         # prepare squared correlation between current and target fidelity
-        rhos_squared = torch.pow(covar_mM.squeeze(-1), 2) / (variance_m * variance_M)
+
+        #-------------------------------------------
+        rhos_squared = torch.pow(covar_mM, 2) / (variance_m * variance_M)
         # batch_shape x 1
         check_no_nans(rhos_squared)
 
-        # calculate quality contribution to the GIBBON acquisition function
+        # calculate quality contribution to the GIBBON acqusition function
         inner_term = 1 - rhos_squared * ratio * (normalized_mvs + ratio)
         acq = -0.5 * inner_term.clamp_min(CLAMP_LB).log()
         # average over posterior max samples
-        acq = acq.mean(dim=1).unsqueeze(0)
 
+        
         if self.X_pending is None:
-            # for q=1, no repulsion term required
-            return acq
+            # for q=1, no replusion term required
+            return acq.squeeze(-1)
 
         # for q>1 GIBBON requires repulsion terms r_i, where
         # r_i = log |C_i| for the predictive
@@ -613,11 +615,11 @@ class qLowerBoundMaxValueEntropy(DiscreteMaxValueBase):
 
         # Each predictive covariance matrix can be expressed as
         # V_i = [[v_i, A_i], [A_i,B]] for a shared m x m tensor B.
-        # So we can efficiently calculate |V_i| using the formula for
+        # So we can efficientely calculate |V_i| using the formula for
         # determinant of block matricies, i.e.
         # |V_i| = (v_i - A_i^T * B^{-1} * A_i) * |B|
         # As the |B| term does not depend on X and we later take its log,
-        # it provides only a translation of the acquisition function surface
+        # it provides only a translation of the acqusition function surface
         # and can thus be ignored.
 
         if self.posterior_transform is not None:
@@ -647,19 +649,11 @@ class qLowerBoundMaxValueEntropy(DiscreteMaxValueBase):
         # 1 x m x m
 
         # use determinant of block matrix formula
-        inv_quad_term = inv_quad(B, A.transpose(1, 2)).unsqueeze(1)
-        # NOTE: Even when using Cholesky to compute inv_quad, `V_determinant` can be
-        # negative due to numerical issues. To avoid this, we clamp the variance
-        # so that `V_determinant` > 0, while still allowing gradients to be
-        # propagated through `inv_quad_term`, as well as through `variance_m`
-        # in the expression for `r` below.
-        # choosing eps to be small while avoiding numerical underflow
-        eps = 1e-6 if inv_quad_term.dtype == torch.float32 else 1e-12
-        V_determinant = variance_m.clamp(inv_quad_term * (1 + eps)) - inv_quad_term
+        V_determinant = variance_m - inv_quad(B, A.transpose(1, 2)).unsqueeze(1)
         # batch_shape x 1
 
         # Take logs and convert covariances to correlations.
-        r = V_determinant.log() - variance_m.log()  # = log(1 - inv_quad / var)
+        r = V_determinant.log() - variance_m.log()
         r = 0.5 * r.transpose(0, 1)
         return acq + r
 
@@ -799,7 +793,6 @@ class qMultiFidelityMaxValueEntropy(qMaxValueEntropy):
         # get the covariance between the low fidelities and max fidelity
         covar_mM = posterior.distribution.covariance_matrix[..., :-1, -1]
         # batch_shape x num_fantasies x (1 + num_trace_observations)
-
         check_no_nans(mean_M)
         check_no_nans(variance_M)
         check_no_nans(covar_mM)
@@ -809,6 +802,7 @@ class qMultiFidelityMaxValueEntropy(qMaxValueEntropy):
             X=X_expand, mean_M=mean_M, variance_M=variance_M, covar_mM=covar_mM
         )
         ig = self.cost_aware_utility(X=X, deltas=ig, sampler=self.cost_sampler)
+
         return ig.mean(dim=0)  # average over the fantasies
 
 
@@ -833,65 +827,6 @@ class qMultiFidelityLowerBoundMaxValueEntropy(qMultiFidelityMaxValueEntropy):
         >>> MF_qGIBBON = qMultiFidelityLowerBoundMaxValueEntropy(model, candidate_set)
         >>> mf_gibbon = MF_qGIBBON(test_X)
     """
-
-    def __init__(
-        self,
-        model: Model,
-        candidate_set: Tensor,
-        num_fantasies: int = 16,
-        num_mv_samples: int = 10,
-        num_y_samples: int = 128,
-        posterior_transform: PosteriorTransform | None = None,
-        use_gumbel: bool = True,
-        maximize: bool = True,
-        cost_aware_utility: CostAwareUtility | None = None,
-        project: Callable[[Tensor], Tensor] = lambda X: X,
-        expand: Callable[[Tensor], Tensor] = lambda X: X,
-    ) -> None:
-        r"""Single-outcome max-value entropy search acquisition function.
-
-        Args:
-            model: A fitted single-outcome model.
-            candidate_set: A `n x d` Tensor including `n` candidate points to
-                discretize the design space, which will be used to sample the
-                max values from their posteriors.
-            cost_aware_utility: A CostAwareUtility computing the cost-transformed
-                utility from a candidate set and samples of increases in utility.
-            num_fantasies: Number of fantasies to generate. The higher this
-                number the more accurate the model (at the expense of model
-                complexity and performance) and it's only used when `X_pending`
-                is not `None`.
-            num_mv_samples: Number of max value samples.
-            num_y_samples: Number of posterior samples at specific design point `X`.
-            posterior_transform: A PosteriorTransform. If using a multi-output model,
-                a PosteriorTransform that transforms the multi-output posterior into a
-                single-output posterior is required.
-            use_gumbel: If True, use Gumbel approximation to sample the max values.
-            maximize: If True, consider the problem a maximization problem.
-            cost_aware_utility: A CostAwareUtility computing the cost-transformed
-                utility from a candidate set and samples of increases in utility.
-            project: A callable mapping a `batch_shape x q x d` tensor of design
-                points to a tensor of the same shape projected to the desired
-                target set (e.g. the target fidelities in case of multi-fidelity
-                optimization).
-            expand: A callable mapping a `batch_shape x q x d` input tensor to
-                a `batch_shape x (q + q_e)' x d`-dim output tensor, where the
-                `q_e` additional points in each q-batch correspond to
-                additional ("trace") observations.
-        """
-        super().__init__(
-            model=model,
-            candidate_set=candidate_set,
-            num_fantasies=num_fantasies,
-            num_mv_samples=num_mv_samples,
-            num_y_samples=num_y_samples,
-            posterior_transform=posterior_transform,
-            use_gumbel=use_gumbel,
-            maximize=maximize,
-            cost_aware_utility=cost_aware_utility,
-            project=project,
-            expand=expand,
-        )
 
     def _compute_information_gain(
         self, X: Tensor, mean_M: Tensor, variance_M: Tensor, covar_mM: Tensor
@@ -998,25 +933,25 @@ def _sample_max_value_Gumbel(
     device = candidate_set.device
     dtype = candidate_set.dtype
     quantiles = torch.zeros(num_fantasies, 3, device=device, dtype=dtype)
-    for i in range(num_fantasies):
-        lo_, hi_ = lo[i], hi[i]
-        N = norm(mu[:, i].cpu().numpy(), sigma[:, i].cpu().numpy())
-        quantiles[i, :] = torch.tensor(
-            [
-                brentq(lambda y: np.exp(np.sum(N.logcdf(y))) - p, lo_, hi_)
-                for p in [0.25, 0.50, 0.75]
-            ]
-        )
-    q25, q50, q75 = quantiles[:, 0], quantiles[:, 1], quantiles[:, 2]
-    # q25, q50, q75 are 1 dimensional tensor with size of either 1 or num_fantasies
+    with torch.no_grad():
+        for i in range(num_fantasies):
+            lo_, hi_ = lo[i], hi[i]
+            N = norm(mu[:, i].cpu().numpy(), sigma[:, i].cpu().numpy())
+            quantiles[i, :] = torch.tensor(
+                [
+                    brentq(lambda y: np.exp(np.sum(N.logcdf(y))) - p, lo_, hi_)
+                    for p in [0.25, 0.50, 0.75]
+                ]
+            )
+        q25, q50, q75 = quantiles[:, 0], quantiles[:, 1], quantiles[:, 2]
+        # q25, q50, q75 are 1 dimensional tensor with size of either 1 or num_fantasies
 
-    # parameter fitting based on matching percentiles for the Gumbel distribution
-    b = (q25 - q75) / (log(log(4.0 / 3.0)) - log(log(4.0)))
-    a = q50 + b * log(log(2.0))
+        # parameter fitting based on matching percentiles for the Gumbel distribution
+        b = (q25 - q75) / (log(log(4.0 / 3.0)) - log(log(4.0)))
+        a = q50 + b * log(log(2.0))
 
-    # inverse sampling from the fitted Gumbel CDF distribution
-    sample_shape = (num_samples, num_fantasies)
-    eps = torch.rand(*sample_shape, device=device, dtype=dtype)
-    max_values = a - b * eps.log().mul(-1.0).log()
-
-    return max_values  # num_samples x num_fantasies
+        # inverse sampling from the fitted Gumbel CDF distribution
+        sample_shape = (num_samples, num_fantasies)
+        eps = torch.rand(*sample_shape, device=device, dtype=dtype)
+        max_values = a - b * eps.log().mul(-1.0).log()
+        return torch.zeros_like(max_values), max_values.unsqueeze(-1)  # num_samples x num_fantasies
