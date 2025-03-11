@@ -76,7 +76,7 @@ class qPredictiveEntropySearch(qMultiObjectivePredictiveEntropySearch):
         """
         super().__init__(
             model=model,
-            optimal_inputs=optimal_inputs.unsqueeze(-2),
+            optimal_inputs=optimal_inputs,
             maximize=maximize,
             X_pending=X_pending,
             max_ep_iterations=max_ep_iterations,
