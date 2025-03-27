@@ -1316,7 +1316,7 @@ def sample_points_around_best(
         )
         perturbed_X = torch.cat([perturbed_X, perturbed_subset_dims_X], dim=0)
         # shuffle points
-        perm = torch.randperm(perturbed_X.shape[0], device=X.device)
+        perm = torch.randperm(perturbed_X.shape[0], device=perturbed_X.device)
         perturbed_X = perturbed_X[perm]
     return perturbed_X
 

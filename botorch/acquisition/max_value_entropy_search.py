@@ -131,7 +131,6 @@ class MaxValueBase(AcquisitionFunction, ABC):
         ig = self._compute_information_gain(
             X=X, mean_M=mean, variance_M=variance, covar_mM=variance.unsqueeze(-1)
         )
-        
         return ig.mean(dim=0)  # average over fantasies
 
     def set_X_pending(self, X_pending: Tensor | None = None) -> None:
@@ -149,8 +148,7 @@ class MaxValueBase(AcquisitionFunction, ABC):
         if self.input_max_values is None:
             self._sample_max_values(num_samples=self.num_mv_samples, X_pending=X_pending)
         else:
-            self.posterior_max_values = self.input_max_values.transpose(0, -1)
-            
+            self.posterior_max_values = self.input_max_values
         self.X_pending = X_pending
 
     # ------- Abstract methods that need to be implemented by subclasses ------- #
@@ -285,7 +283,7 @@ class DiscreteMaxValueBase(MaxValueBase):
             except AttributeError:
                 pass
 
-            self.posterior_max_values = sample_max_values(
+            _, self.posterior_max_values = sample_max_values(
                 model=self.model,
                 candidate_set=candidate_set,
                 num_samples=self.num_mv_samples,
@@ -802,7 +800,6 @@ class qMultiFidelityMaxValueEntropy(qMaxValueEntropy):
             X=X_expand, mean_M=mean_M, variance_M=variance_M, covar_mM=covar_mM
         )
         ig = self.cost_aware_utility(X=X, deltas=ig, sampler=self.cost_sampler)
-
         return ig.mean(dim=0)  # average over the fantasies
 
 
