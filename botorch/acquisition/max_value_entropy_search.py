@@ -579,7 +579,7 @@ class qLowerBoundMaxValueEntropy(DiscreteMaxValueBase):
         )
 
         # prepare max value quantities required by GIBBON
-        mvs = self.posterior_max_values.unsqueeze(-3)
+        mvs = self.posterior_max_values.unsqueeze(1)
         normalized_mvs = (mvs - mean_m) / stdv
         cdf_mvs = normal.cdf(normalized_mvs).clamp_min(CLAMP_LB)
         pdf_mvs = torch.exp(normal.log_prob(normalized_mvs))
