@@ -14,13 +14,12 @@ REQUIRED_MAJOR = 3
 REQUIRED_MINOR = 10
 
 # Requirements for testing, formatting, and tutorials
-TEST_REQUIRES = ["pytest", "pytest-cov"]
+PYMOO_REQUIRES = ["pymoo"]
+TEST_REQUIRES = ["pytest", "pytest-cov", "requests"] + PYMOO_REQUIRES
 FMT_REQUIRES = ["flake8", "ufmt", "flake8-docstrings"]
 TUTORIALS_REQUIRES = [
-    "ax-platform",
     "cma",
     "jupyter",
-    "kaleido",
     "matplotlib",
     "memory_profiler",
     "papermill",
@@ -32,6 +31,7 @@ TUTORIALS_REQUIRES = [
     "mdformat-myst",
     "tabulate",
 ]
+
 
 # Check for python version
 if sys.version_info < (REQUIRED_MAJOR, REQUIRED_MINOR):
@@ -109,5 +109,6 @@ setup(
         "dev": DEV_REQUIRES,
         "test": TEST_REQUIRES,
         "tutorials": TUTORIALS_REQUIRES,
+        "pymoo": PYMOO_REQUIRES,
     },
 )

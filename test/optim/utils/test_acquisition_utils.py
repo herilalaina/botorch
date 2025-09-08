@@ -14,14 +14,11 @@ from botorch.acquisition.monte_carlo import (
     qExpectedImprovement,
     qNoisyExpectedImprovement,
 )
-from botorch.acquisition.multi_objective.max_value_entropy_search import (
-    qMultiObjectiveMaxValueEntropy,
-)
 from botorch.acquisition.multi_objective.monte_carlo import (
     qExpectedHypervolumeImprovement,
     qNoisyExpectedHypervolumeImprovement,
 )
-from botorch.exceptions import BotorchError
+from botorch.exceptions import BotorchError, BotorchTensorDimensionError
 from botorch.exceptions.warnings import BotorchWarning
 from botorch.models import ModelListGP, SingleTaskGP
 from botorch.models.transforms.input import Warp
@@ -97,25 +94,13 @@ class TestColumnWiseClamp(BotorchTestCase):
 
 
 class TestFixFeatures(BotorchTestCase):
-    def _getTensors(self):
-        X = torch.tensor([[-2, 1, 3], [0.5, -0.5, 1.0]], device=self.device)
-        X_null_two = torch.tensor([[-2, 1, 3], [0.5, -0.5, 1.0]], device=self.device)
-        X_expected = torch.tensor([[-1, 1, -2], [-1, -0.5, -2]], device=self.device)
-        X_expected_null_two = torch.tensor(
-            [[-1, 1, 3], [-1, -0.5, 1.0]], device=self.device
-        )
-        return X, X_null_two, X_expected, X_expected_null_two
-
     def test_fix_features(self):
-        X, X_null_two, X_expected, X_expected_null_two = self._getTensors()
+        X = torch.tensor([[-2, 1, 3], [0.5, -0.5, 1.0]], device=self.device)
+        X_expected = torch.tensor([[-1, 1, -2], [-1, -0.5, -2]], device=self.device)
         X.requires_grad_(True)
-        X_null_two.requires_grad_(True)
 
-        X_fix = fix_features(X, {0: -1, 2: -2})
-        X_fix_null_two = fix_features(X_null_two, {0: -1, 2: None})
-
+        X_fix = fix_features(X, {0: -1, 2: -2}, replace_current_value=True)
         self.assertTrue(torch.equal(X_fix, X_expected))
-        self.assertTrue(torch.equal(X_fix_null_two, X_expected_null_two))
 
         def f(X):
             return X.sum()
@@ -132,20 +117,52 @@ class TestFixFeatures(BotorchTestCase):
             )
         )
 
-        f(X_null_two).backward()
-        self.assertTrue(torch.equal(X_null_two.grad, torch.ones_like(X)))
-        X_null_two.grad.zero_()
-        f(X_fix_null_two).backward()
-        self.assertTrue(
-            torch.equal(
-                X_null_two.grad,
-                torch.tensor([[0.0, 1.0, 0.0], [0.0, 1.0, 0.0]], device=self.device),
-            )
-        )
+        X_fix = fix_features(X, {0: -1, 2: -2}, replace_current_value=False)
+        X_expected = torch.zeros(2, 5, device=self.device)
+        X_expected[:, 0] = -1
+        X_expected[:, 2] = -2
+        X_expected[:, [1, 3, 4]] = X
+        self.assertTrue(torch.equal(X_fix, X_expected))
+
+    def test_fix_features_tensor_values(self):
+        # Test with 3D tensor input (b x q x d)
+        X = torch.tensor(
+            [[[-2, 1, 3], [0.5, -0.5, 1.0]], [[1, 2, 3], [4, 5, 6]]],
+            device=self.device,
+        )  # 2 x 2 x 3
+
+        # Test with b-dimensional tensor value
+        b_value = torch.tensor([-1, -3], device=self.device)
+        X_fix = fix_features(X, {0: b_value}, replace_current_value=True)
+        X_expected = torch.zeros(2, 2, 3, device=self.device)
+        X_expected[0, :, 0] = -1
+        X_expected[1, :, 0] = -3
+        X_expected[:, :, 1:] = X[:, :, 1:]
+        self.assertTrue(torch.equal(X_fix, X_expected))
+
+        # Test with b x q dimensional tensor value
+        bq_value = torch.tensor([[-1, -2], [-3, -4]], device=self.device)
+        X_fix = fix_features(X, {0: bq_value}, replace_current_value=True)
+        X_expected = torch.zeros(2, 2, 3, device=self.device)
+        X_expected[0, 0, 0] = -1
+        X_expected[0, 1, 0] = -2
+        X_expected[1, 0, 0] = -3
+        X_expected[1, 1, 0] = -4
+        X_expected[:, :, 1:] = X[:, :, 1:]
+        self.assertTrue(torch.equal(X_fix, X_expected))
+
+    def test_fix_features_dimension_error(self):
+        # Test with 2D tensor input
+        X = torch.tensor([[-2, 1, 3], [0.5, -0.5, 1.0]], device=self.device)
+        b_value = torch.tensor([-1, -3], device=self.device)
+
+        # This should raise BotorchTensorDimensionError
+        with self.assertRaises(BotorchTensorDimensionError):
+            fix_features(X, {0: b_value}, replace_current_value=True)
 
 
 class TestGetXBaseline(BotorchTestCase):
-    def test_get_X_baseline(self):
+    def test_get_X_baseline(self) -> None:
         tkwargs = {"device": self.device}
         for dtype in (torch.float, torch.double):
             tkwargs["dtype"] = dtype
@@ -227,15 +244,6 @@ class TestGetXBaseline(BotorchTestCase):
             X = get_X_baseline(acq_function=acqf)
             self.assertTrue(torch.equal(X, X_train))
 
-            # test MESMO for which we need to use
-            # `acqf.mo_model`
-            batched_mo_model = SingleTaskGP(X_train, Y_train, outcome_transform=None)
-            acqf = qMultiObjectiveMaxValueEntropy(
-                batched_mo_model,
-                sample_pareto_frontiers=lambda model: torch.rand(10, 2, **tkwargs),
-            )
-            X = get_X_baseline(acq_function=acqf)
-            self.assertTrue(torch.equal(X, X_train))
             # test that if there is an input transform that is applied
             # to the train_inputs when the model is in eval mode, we
             # extract the untransformed train_inputs
@@ -249,3 +257,17 @@ class TestGetXBaseline(BotorchTestCase):
             acqf = qExpectedImprovement(model, best_f=0.0)
             X = get_X_baseline(acq_function=acqf)
             self.assertTrue(torch.equal(X, X_train))
+
+            with self.subTest("Batched X"):
+                model = SingleTaskGP(
+                    train_X=X_train.unsqueeze(0),
+                    train_Y=Y_train[:, :1].unsqueeze(0),
+                )
+                acqf = qNoisyExpectedImprovement(
+                    model,
+                    X_baseline=X_train.unsqueeze(0),
+                    prune_baseline=False,
+                    cache_root=False,
+                )
+                X = get_X_baseline(acq_function=acqf)
+                self.assertTrue(torch.equal(X, X_train))

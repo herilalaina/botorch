@@ -38,7 +38,7 @@ from botorch.exceptions.errors import (
 from botorch.exceptions.warnings import UserInputWarning
 from botorch.sampling.qmc import NormalQMCEngine
 
-from botorch.utils.transforms import normalize, unnormalize
+from botorch.utils.transforms import normalize, standardize, unnormalize
 from scipy.spatial import Delaunay, HalfspaceIntersection
 from torch import LongTensor, Tensor
 from torch.distributions import Normal
@@ -996,6 +996,11 @@ def sparse_to_dense_constraints(
     return A, b
 
 
+# This is only used in get_optimal_samples, which in turn is only used in the input
+# constructors of
+# 1) qJointEntropySearch,
+# 2) qSelfCorrectingBayesianOptimization, and
+# 3) qTestSetInformationGain.
 def optimize_posterior_samples(
     paths: GenericDeterministicModel,
     bounds: Tensor,
@@ -1043,20 +1048,7 @@ def optimize_posterior_samples(
         return res.squeeze(-1)
 
     # queries all samples on all candidates - output shape
-    # raw_samples * num_optima * num_models
-    frac_random = 1 if suggested_points is None else options.get("frac_random", 0.9)
-    candidate_set = draw_sobol_samples(
-        bounds=bounds, n=round(raw_samples * frac_random), q=1
-    ).squeeze(-2)
-    if frac_random < 1:
-        perturbed_suggestions = sample_truncated_normal_perturbations(
-            X=suggested_points,
-            n_discrete_points=round(raw_samples * (1 - frac_random)),
-            sigma=options.get("sample_around_best_sigma", 1e-2),
-            bounds=bounds,
-        )
-        candidate_set = torch.cat((candidate_set, perturbed_suggestions))
-
+    # raw_samples x num_optima x num_models
     candidate_queries = path_func(candidate_set)
     idx = boltzmann_sample(
         function_values=candidate_queries,
@@ -1074,14 +1066,15 @@ def optimize_posterior_samples(
         path_func,
         lower_bounds=bounds[0],
         upper_bounds=bounds[1],
+        use_parallel_mode=False,
     )
     f_opt, arg_opt = f_top_k.max(dim=-1, keepdim=True)
 
     # For each sample (and possibly for every model in the batch of models), this
     # retrieves the argmax. We flatten, pick out the indices and then reshape to
     # the original batch shapes (so instead of pickig out the argmax of a
-    # (3, 7, num_restarts, D)) along the num_restarts dim, we pick it out of a
-    # (21, num_restarts, D)
+    # (num_optima, num_models, num_restarts, D)-shaped Tensor along the num_restarts
+    # dim, we pick it out of (num_optima * num_models, num_restarts, D)
     final_shape = candidate_queries.shape[:-1]
     X_opt = X_top_k.reshape(final_shape.numel(), num_restarts, -1)[
         torch.arange(final_shape.numel()), arg_opt.flatten()
@@ -1115,13 +1108,11 @@ def boltzmann_sample(
             succesively decreased by 'temp_decrease'.
         replacement: If True, samples are drawn with replacement, allowing duplicates.
         temp_decrease: The rate at which temperature decreases in case of inf weights.
-    Returns:
+
+        Returns:
         A [batch_shape] x num_samples tensor of indices of sampled positions.
     """
-    # standardize() is not used since function_values may be more than 2D
-    norm_weights = (
-        function_values - function_values.mean(dim=-1, keepdim=True)
-    ) / function_values.std(dim=-1, keepdim=True)
+    norm_weights = standardize(function_values)
     weights = torch.exp(eta * norm_weights)
     while torch.isinf(weights).any():
         eta *= temp_decrease

@@ -409,7 +409,9 @@ def gen_batch_initial_conditions(
                         dim=0,
                     )
             # Keep X on CPU for consistency & to limit GPU memory usage.
-            X_rnd = fix_features(X_rnd, fixed_features=fixed_features).cpu()
+            X_rnd = fix_features(
+                X_rnd, fixed_features=fixed_features, replace_current_value=True
+            ).cpu()
 
             # Append the fixed fantasies to the randomly generated points
             if fixed_X_fantasies is not None:
@@ -625,6 +627,21 @@ def gen_one_shot_kg_initial_conditions(
         )
     q_aug = acq_function.get_augmented_q_batch_size(q=q)
 
+    # Check for inter-point (in)equality constraints
+    for constraints, type_of_constraints in [
+        (inequality_constraints, "inequality"),
+        (equality_constraints, "equality"),
+    ]:
+        if constraints is not None and len(constraints) > 0:
+            for indices, _, _ in constraints:
+                if len(indices.shape) > 1:
+                    raise NotImplementedError(
+                        "Indices must be one-dimensional "
+                        "in gen_one_shot_kg_initial_conditions. "
+                        f"Received indices {indices} "
+                        f"for {type_of_constraints} constrained."
+                    )
+
     # TODO: Avoid unnecessary computation by not generating all candidates
     ics = gen_batch_initial_conditions(
         acq_function=acq_function,
@@ -701,31 +718,33 @@ def gen_one_shot_hvkg_initial_conditions(
         as well as all `q` candidate points are chosen according to the standard
         initialization strategy in `gen_batch_initial_conditions`.
 
-        Args:
-            acq_function: The qKnowledgeGradient instance to be optimized.
-            bounds: A `2 x d` tensor of lower and upper bounds for each column of
-                task features.
-            q: The number of candidates to consider.
-            num_restarts: The number of starting points for multistart acquisition
-                function optimization.
-            raw_samples: The number of raw samples to consider in the initialization
-                heuristic.
-            fixed_features: A map `{feature_index: value}` for features that
-                should be fixed to a particular value during generation.
-            options: Options for initial condition generation. These contain all
-                settings for the standard heuristic initialization from
-                `gen_batch_initial_conditions`. In addition, they contain
-                `frac_random` (the fraction of fully random fantasy points),
-                `num_inner_restarts` and `raw_inner_samples` (the number of random
-                restarts and raw samples for solving the posterior objective
-                maximization problem, respectively) and `eta` (temperature parameter
-                for sampling heuristic from posterior objective maximizers).
-            inequality constraints: A list of tuples (indices, coefficients, rhs),
-                with each tuple encoding an inequality constraint of the form
-                `\sum_i (X[indices[i]] * coefficients[i]) >= rhs`.
-            equality constraints: A list of tuples (indices, coefficients, rhs),
-                with each tuple encoding an inequality constraint of the form
-                `\sum_i (X[indices[i]] * coefficients[i]) = rhs`.
+    Args:
+        acq_function: The qKnowledgeGradient instance to be optimized.
+        bounds: A `2 x d` tensor of lower and upper bounds for each column of
+            task features.
+        q: The number of candidates to consider.
+        num_restarts: The number of starting points for multistart acquisition
+            function optimization.
+        raw_samples: The number of raw samples to consider in the initialization
+            heuristic.
+        fixed_features: A map `{feature_index: value}` for features that
+            should be fixed to a particular value during generation.
+        options: Options for initial condition generation. These contain all
+            settings for the standard heuristic initialization from
+            `gen_batch_initial_conditions`. In addition, they contain
+            `frac_random` (the fraction of fully random fantasy points),
+            `num_inner_restarts` and `raw_inner_samples` (the number of random
+            restarts and raw samples for solving the posterior objective
+            maximization problem, respectively) and `eta` (temperature parameter
+            for sampling heuristic from posterior objective maximizers).
+        inequality constraints: Optionally, list of tuples (indices, coefficients, rhs),
+            with each tuple encoding an inequality constraint of the form
+            `\sum_i (X[indices[i]] * coefficients[i]) >= rhs`. Each
+            tensor of indices must be one-dimensional, since inter-point
+            constraints are not supported here.
+        equality constraints: Optionally, a list of tuples (indices, coefficients, rhs),
+            with each tuple encoding an inequality constraint of the form
+            `\sum_i (X[indices[i]] * coefficients[i]) = rhs`.
 
         Returns:
             A `num_restarts x q' x d` tensor that can be used as initial conditions
@@ -993,7 +1012,9 @@ def gen_value_function_initial_conditions(
     ).to(resampled)
     # full set of raw samples
     X_rnd = torch.cat([resampled, randomized], dim=0)
-    X_rnd = fix_features(X_rnd, fixed_features=fixed_features)
+    X_rnd = fix_features(
+        X_rnd, fixed_features=fixed_features, replace_current_value=True
+    )
 
     # evaluate the raw samples
     with torch.no_grad():
@@ -1071,8 +1092,13 @@ def initialize_q_batch(
     ).permute(-1, *range(len(batch_shape)))
 
     # make sure we get the maximum
-    if max_idx not in idcs:
-        idcs[-1] = max_idx
+    if batch_shape == torch.Size():
+        if max_idx not in idcs:
+            idcs[-1] = max_idx
+    else:
+        has_max = (max_idx == idcs).any(dim=0)
+        idcs[-1, ~has_max] = max_idx[~has_max]
+
     if batch_shape == torch.Size():
         return X[idcs], acq_vals[idcs]
     else:

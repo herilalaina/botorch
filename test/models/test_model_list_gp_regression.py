@@ -23,7 +23,7 @@ from botorch.posteriors import GPyTorchPosterior, PosteriorList, TransformedPost
 from botorch.sampling.base import MCSampler
 from botorch.sampling.list_sampler import ListSampler
 from botorch.sampling.normal import IIDNormalSampler
-from botorch.utils.testing import _get_random_data, BotorchTestCase
+from botorch.utils.testing import BotorchTestCase, get_random_data
 from gpytorch.distributions import MultitaskMultivariateNormal, MultivariateNormal
 from gpytorch.kernels import RBFKernel
 from gpytorch.likelihoods import LikelihoodList
@@ -41,13 +41,9 @@ from torch import Tensor
 def _get_model(
     fixed_noise=False, outcome_transform: str = "None", use_intf=False, **tkwargs
 ) -> ModelListGP:
-    train_x1, train_y1 = _get_random_data(
-        batch_shape=torch.Size(), m=1, n=10, **tkwargs
-    )
+    train_x1, train_y1 = get_random_data(batch_shape=torch.Size(), m=1, n=10, **tkwargs)
     train_y1 = torch.exp(train_y1)
-    train_x2, train_y2 = _get_random_data(
-        batch_shape=torch.Size(), m=1, n=11, **tkwargs
-    )
+    train_x2, train_y2 = get_random_data(batch_shape=torch.Size(), m=1, n=11, **tkwargs)
     if outcome_transform == "Standardize":
         octfs = [Standardize(m=1), Standardize(m=1)]
     elif outcome_transform == "Log":
@@ -174,39 +170,6 @@ class TestModelListGP(BotorchTestCase):
         if gpytorch_posterior_expected:
             self.assertIsInstance(posterior.distribution, MultivariateNormal)
 
-        # test condition_on_observations
-        f_x = [torch.rand(2, 1, **tkwargs) for _ in range(2)]
-        f_y = torch.rand(2, 2, **tkwargs)
-        if fixed_noise:
-            noise = 0.1 + 0.1 * torch.rand_like(f_y)
-            cond_kwargs = {"noise": noise}
-        else:
-            cond_kwargs = {}
-        cm = model.condition_on_observations(f_x, f_y, **cond_kwargs)
-        self.assertIsInstance(cm, ModelListGP)
-
-        # test condition_on_observations batched
-        f_x = [torch.rand(3, 2, 1, **tkwargs) for _ in range(2)]
-        f_y = torch.rand(3, 2, 2, **tkwargs)
-        cm = model.condition_on_observations(f_x, f_y, **cond_kwargs)
-        self.assertIsInstance(cm, ModelListGP)
-
-        # test condition_on_observations batched (fast fantasies)
-        f_x = [torch.rand(2, 1, **tkwargs) for _ in range(2)]
-        f_y = torch.rand(3, 2, 2, **tkwargs)
-        cm = model.condition_on_observations(f_x, f_y, **cond_kwargs)
-        self.assertIsInstance(cm, ModelListGP)
-
-        # test condition_on_observations (incorrect input shape error)
-        with self.assertRaises(BotorchTensorDimensionError):
-            model.condition_on_observations(
-                f_x, torch.rand(3, 2, 3, **tkwargs), **cond_kwargs
-            )
-
-        # test X having wrong size
-        with self.assertRaises(BotorchTensorDimensionError):
-            model.condition_on_observations(f_x[:1], f_y)
-
         # test posterior transform
         X = torch.rand(3, 1, **tkwargs)
         weights = torch.tensor([1, 2], **tkwargs)
@@ -221,6 +184,48 @@ class TestModelListGP(BotorchTestCase):
             )
 
         return model
+
+    def test_condition_on_observations(self) -> None:
+        for dtype, outcome_transform in itertools.product(
+            (torch.float, torch.double), ("None", "Standardize", "Log", "Chained")
+        ):
+            with self.subTest(dtype=dtype, outcome_transform=outcome_transform):
+                tkwargs = {"device": self.device, "dtype": dtype}
+                model = _get_model(
+                    fixed_noise=False, outcome_transform=outcome_transform, **tkwargs
+                )
+                # need to predict before conditioning
+                test_x = torch.tensor([[0.25], [0.75]], **tkwargs)
+                _ = model.posterior(test_x)
+
+                # test condition_on_observations
+                f_x = [torch.rand(2, 1, **tkwargs) for _ in range(2)]
+                f_y = torch.rand(2, 2, **tkwargs)
+                cond_kwargs = {}
+                cm = model.condition_on_observations(f_x, f_y, **cond_kwargs)
+                self.assertIsInstance(cm, ModelListGP)
+
+                # test condition_on_observations batched
+                f_x = [torch.rand(3, 2, 1, **tkwargs) for _ in range(2)]
+                f_y = torch.rand(3, 2, 2, **tkwargs)
+                cm = model.condition_on_observations(f_x, f_y, **cond_kwargs)
+                self.assertIsInstance(cm, ModelListGP)
+
+                # test condition_on_observations batched (fast fantasies)
+                f_x = [torch.rand(2, 1, **tkwargs) for _ in range(2)]
+                f_y = torch.rand(3, 2, 2, **tkwargs)
+                cm = model.condition_on_observations(f_x, f_y, **cond_kwargs)
+                self.assertIsInstance(cm, ModelListGP)
+
+                # test condition_on_observations (incorrect input shape error)
+                with self.assertRaises(BotorchTensorDimensionError):
+                    model.condition_on_observations(
+                        f_x, torch.rand(3, 2, 3, **tkwargs), **cond_kwargs
+                    )
+
+                # test X having wrong size
+                with self.assertRaises(BotorchTensorDimensionError):
+                    model.condition_on_observations(f_x[:1], f_y)
 
     def test_ModelListGP(self) -> None:
         for dtype, outcome_transform in itertools.product(
@@ -261,6 +266,7 @@ class TestModelListGP(BotorchTestCase):
                 )
 
     def test_ModelListGP_fixed_noise(self) -> None:
+        torch.manual_seed(0)
         for dtype, outcome_transform in itertools.product(
             (torch.float, torch.double), ("None", "Standardize")
         ):
@@ -279,7 +285,7 @@ class TestModelListGP(BotorchTestCase):
 
     def test_ModelListGP_single(self):
         tkwargs = {"device": self.device, "dtype": torch.float}
-        train_x1, train_y1 = _get_random_data(
+        train_x1, train_y1 = get_random_data(
             batch_shape=torch.Size(), m=1, n=10, **tkwargs
         )
         model1 = SingleTaskGP(train_X=train_x1, train_Y=train_y1)
@@ -295,7 +301,7 @@ class TestModelListGP(BotorchTestCase):
         outcome_transform_kwargs = (
             {} if use_outcome_transform else {"outcome_transform": None}
         )
-        train_x_raw, train_y = _get_random_data(
+        train_x_raw, train_y = get_random_data(
             batch_shape=torch.Size(), m=1, n=10, **tkwargs
         )
         task_idx = torch.cat(
@@ -565,9 +571,10 @@ class TestModelListGP(BotorchTestCase):
                 Y = torch.cat([Y1, Y2], dim=-1)
                 target_x = torch.tensor([[0.5]], **tkwargs)
 
+                # Default behavior is to Standardize outcomes
                 model_with_transform = ModelListGP(
-                    SingleTaskGP(X, Y1, outcome_transform=Standardize(m=1)),
-                    SingleTaskGP(X, Y2, outcome_transform=Standardize(m=1)),
+                    SingleTaskGP(X, Y1),
+                    SingleTaskGP(X, Y2),
                 )
                 outcome_transform = Standardize(m=2)
                 y_standardized, _ = outcome_transform(Y)
@@ -685,8 +692,8 @@ class TestModelListGP(BotorchTestCase):
                 yvar = torch.full_like(Y, 1e-4)
                 yvar2 = 2 * yvar
                 model = ModelListGP(
-                    SingleTaskGP(X, Y, yvar, outcome_transform=Standardize(m=1)),
-                    SingleTaskGP(X, Y2, yvar2, outcome_transform=Standardize(m=1)),
+                    SingleTaskGP(X, Y, yvar),
+                    SingleTaskGP(X, Y2, yvar2),
                 )
                 # test exceptions
                 eval_mask = torch.zeros(

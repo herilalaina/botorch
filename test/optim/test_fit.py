@@ -13,9 +13,8 @@ import torch
 from botorch.exceptions.warnings import OptimizationWarning
 from botorch.models import SingleTaskGP
 from botorch.models.transforms.input import Normalize
-from botorch.models.transforms.outcome import Standardize
 from botorch.optim import core, fit
-from botorch.optim.core import OptimizationResult
+from botorch.optim.core import OptimizationResult, OptimizationStatus
 from botorch.utils.context_managers import module_rollback_ctx, TensorCheckpoint
 from botorch.utils.testing import BotorchTestCase
 from gpytorch.mlls.exact_marginal_log_likelihood import ExactMarginalLogLikelihood
@@ -41,7 +40,6 @@ class TestFitGPyTorchMLLScipy(BotorchTestCase):
             train_X=train_X,
             train_Y=train_Y,
             input_transform=Normalize(d=1),
-            outcome_transform=Standardize(m=1),
         )
         self.mlls[SingleTaskGP, 1] = ExactMarginalLogLikelihood(model.likelihood, model)
 
@@ -68,19 +66,16 @@ class TestFitGPyTorchMLLScipy(BotorchTestCase):
                 )
             )
 
-            # Test maxiter warning message
-
-            self.assertTrue(any(MAX_ITER_MSG_REGEX.search(str(w.message)) for w in ws))
-            self.assertTrue(
+            # Test stopping due to maxiter without optimization warning.
+            self.assertEqual(result.status, OptimizationStatus.STOPPED)
+            self.assertTrue(MAX_ITER_MSG_REGEX.search(result.message))
+            self.assertFalse(
                 any(issubclass(w.category, OptimizationWarning) for w in ws)
             )
 
             # Test iteration tracking
             self.assertIsInstance(result, OptimizationResult)
             self.assertLessEqual(result.step, options["maxiter"])
-            self.assertEqual(
-                sum(1 for w in ws if MAX_ITER_MSG_REGEX.search(str(w.message))), 1
-            )
 
         # Test that user provided bounds are respected
         with self.subTest("bounds"), module_rollback_ctx(mll, checkpoint=ckpt):
@@ -191,7 +186,6 @@ class TestFitGPyTorchMLLTorch(BotorchTestCase):
             train_X=train_X,
             train_Y=train_Y,
             input_transform=Normalize(d=1),
-            outcome_transform=Standardize(m=1),
         )
         self.mlls[SingleTaskGP, 1] = ExactMarginalLogLikelihood(model.likelihood, model)
 

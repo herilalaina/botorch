@@ -49,11 +49,10 @@ from botorch.optim.initializers import (
 )
 from botorch.sampling.normal import IIDNormalSampler
 from botorch.utils.sampling import manual_seed, unnormalize
-from botorch.utils.test_helpers import get_model
 from botorch.utils.testing import (
-    _get_max_violation_of_bounds,
-    _get_max_violation_of_constraints,
     BotorchTestCase,
+    get_max_violation_of_bounds,
+    get_max_violation_of_constraints,
     MockAcquisitionFunction,
     MockModel,
     MockPosterior,
@@ -64,11 +63,11 @@ class TestBoundsAndConstraintCheckers(BotorchTestCase):
     def test_bounds_check(self) -> None:
         bounds = torch.tensor([[1, 2], [3, 4]], device=self.device)
         samples = torch.tensor([[2, 3], [2, 3.1]], device=self.device)[None, :, :]
-        result = _get_max_violation_of_bounds(samples, bounds)
+        result = get_max_violation_of_bounds(samples, bounds)
         self.assertAlmostEqual(result, -0.9, delta=1e-6)
 
         samples = torch.tensor([[2, 3], [2, 4.1]], device=self.device)[None, :, :]
-        result = _get_max_violation_of_bounds(samples, bounds)
+        result = get_max_violation_of_bounds(samples, bounds)
         self.assertAlmostEqual(result, 0.1, delta=1e-6)
 
     def test_constraint_check(self) -> None:
@@ -80,10 +79,10 @@ class TestBoundsAndConstraintCheckers(BotorchTestCase):
             )
         ]
         samples = torch.tensor([[2, 3], [2, 3.1]], device=self.device)[None, :, :]
-        result = _get_max_violation_of_constraints(samples, constraints, equality=True)
+        result = get_max_violation_of_constraints(samples, constraints, equality=True)
         self.assertAlmostEqual(result, 0.1, delta=1e-6)
 
-        result = _get_max_violation_of_constraints(samples, constraints, equality=False)
+        result = get_max_violation_of_constraints(samples, constraints, equality=False)
         self.assertAlmostEqual(result, 0.0, delta=1e-6)
 
 
@@ -137,6 +136,7 @@ class TestInitializeQBatch(BotorchTestCase):
             (torch.float, (2,)),
             (torch.double, torch.Size([2, 3, 4])),
             (torch.float, []),
+            (torch.float, [100]),
         ):
             # basic test
             X = torch.rand(5, *batch_shape, 3, 4, device=self.device, dtype=dtype)
@@ -148,10 +148,16 @@ class TestInitializeQBatch(BotorchTestCase):
             self.assertEqual(ics_acq_vals.shape, torch.Size([2, *batch_shape]))
             self.assertEqual(ics_acq_vals.device, acq_vals.device)
             self.assertEqual(ics_acq_vals.dtype, acq_vals.dtype)
+            # check that the max value for every batch is returned
+            max_values = acq_vals.max(dim=0).values
+            contains_max = (ics_acq_vals == max_values).any(dim=0)
+            self.assertTrue(contains_max.all())
+
             # ensure nothing happens if we want all samples
             ics_X, ics_acq_vals = initialize_q_batch(X=X, acq_vals=acq_vals, n=5)
             self.assertTrue(torch.equal(X, ics_X))
             self.assertTrue(torch.equal(acq_vals, ics_acq_vals))
+
             # ensure raises correct warning
             acq_vals = torch.zeros(5, device=self.device, dtype=dtype)
             with self.assertWarns(BadInitialCandidatesWarning):
@@ -264,7 +270,7 @@ class TestGenBatchInitialCandidates(BotorchTestCase):
             self.assertEqual(batch_initial_conditions.device, bounds.device)
             self.assertEqual(batch_initial_conditions.dtype, bounds.dtype)
             self.assertLess(
-                _get_max_violation_of_bounds(batch_initial_conditions, bounds),
+                get_max_violation_of_bounds(batch_initial_conditions, bounds),
                 1e-6,
             )
             batch_shape = (
@@ -343,7 +349,7 @@ class TestGenBatchInitialCandidates(BotorchTestCase):
             self.assertEqual(batch_initial_conditions.device, bounds.device)
             self.assertEqual(batch_initial_conditions.dtype, bounds.dtype)
             self.assertLess(
-                _get_max_violation_of_bounds(batch_initial_conditions, bounds),
+                get_max_violation_of_bounds(batch_initial_conditions, bounds),
                 1e-6,
             )
             batch_shape = (
@@ -405,7 +411,7 @@ class TestGenBatchInitialCandidates(BotorchTestCase):
             self.assertEqual(batch_initial_conditions.device, bounds.device)
             self.assertEqual(batch_initial_conditions.dtype, bounds.dtype)
             self.assertLess(
-                _get_max_violation_of_bounds(batch_initial_conditions, bounds), 1e-6
+                get_max_violation_of_bounds(batch_initial_conditions, bounds), 1e-6
             )
             if ffs is not None:
                 for idx, val in ffs.items():
@@ -633,18 +639,18 @@ class TestGenBatchInitialCandidates(BotorchTestCase):
                     return None if x is None else x.to(device=self.device)
 
                 self.assertLess(
-                    _get_max_violation_of_bounds(_to_self_device(samples), bounds), tol
+                    get_max_violation_of_bounds(_to_self_device(samples), bounds), tol
                 )
 
                 self.assertLess(
-                    _get_max_violation_of_constraints(
+                    get_max_violation_of_constraints(
                         _to_self_device(samples), constraints=equalities, equality=True
                     ),
                     tol,
                 )
 
                 self.assertLess(
-                    _get_max_violation_of_constraints(
+                    get_max_violation_of_constraints(
                         _to_self_device(samples),
                         constraints=inequalities,
                         equality=False,
@@ -704,11 +710,11 @@ class TestGenBatchInitialCandidates(BotorchTestCase):
                 self.assertEqual(batch_initial_conditions.device, bounds.device)
                 self.assertEqual(batch_initial_conditions.dtype, bounds.dtype)
                 self.assertLess(
-                    _get_max_violation_of_bounds(batch_initial_conditions, bounds),
+                    get_max_violation_of_bounds(batch_initial_conditions, bounds),
                     1e-6,
                 )
                 self.assertLess(
-                    _get_max_violation_of_constraints(
+                    get_max_violation_of_constraints(
                         batch_initial_conditions,
                         inequality_constraints,
                         equality=False,
@@ -716,7 +722,7 @@ class TestGenBatchInitialCandidates(BotorchTestCase):
                     1e-6,
                 )
                 self.assertLess(
-                    _get_max_violation_of_constraints(
+                    get_max_violation_of_constraints(
                         batch_initial_conditions,
                         equality_constraints,
                         equality=True,
@@ -817,7 +823,7 @@ class TestGenBatchInitialCandidates(BotorchTestCase):
                     batch_initial_conditions[1, 2, 0],
                 )
                 self.assertLess(
-                    _get_max_violation_of_constraints(
+                    get_max_violation_of_constraints(
                         batch_initial_conditions,
                         inequality_constraints,
                         equality=False,
@@ -882,7 +888,7 @@ class TestGenBatchInitialCandidates(BotorchTestCase):
                 self.assertEqual(batch_initial_conditions.dtype, bounds.dtype)
                 self.assertTrue((batch_initial_conditions[..., -1] == 0.42).all())
                 self.assertLess(
-                    _get_max_violation_of_bounds(batch_initial_conditions, bounds),
+                    get_max_violation_of_bounds(batch_initial_conditions, bounds),
                     1e-6,
                 )
                 if ffs is not None:
@@ -977,7 +983,7 @@ class TestGenBatchInitialCandidates(BotorchTestCase):
                 self.assertEqual(batch_initial_conditions.device, bounds.device)
                 self.assertEqual(batch_initial_conditions.dtype, bounds.dtype)
                 self.assertLess(
-                    _get_max_violation_of_bounds(batch_initial_conditions, bounds),
+                    get_max_violation_of_bounds(batch_initial_conditions, bounds),
                     1e-6,
                 )
                 batch_shape = (
@@ -1042,40 +1048,89 @@ class TestGenOneShotKGInitialConditions(BotorchTestCase):
                     raw_samples=raw_samples,
                     options={"frac_random": 2.0},
                 )
+
+            forbidden_indices = torch.tensor([[0, 1], [0, 1]])
+            for constraint_type in [
+                "inequality_constraints",
+                "equality_constraints",
+            ]:
+                constraint_kwarg = {
+                    constraint_type: [
+                        (
+                            forbidden_indices,
+                            torch.ones(2).to(mean),
+                            0.5,
+                        )
+                    ]
+                }
+                with self.subTest(
+                    f"intra-point {constraint_type} not supported"
+                ), self.assertRaisesRegex(
+                    NotImplementedError,
+                    "Indices must be one-dimensional "
+                    "in gen_one_shot_kg_initial_conditions. "
+                    "Received indices",
+                ):
+                    gen_one_shot_kg_initial_conditions(
+                        acq_function=mock_kg,
+                        bounds=bounds,
+                        q=1,
+                        num_restarts=num_restarts,
+                        raw_samples=raw_samples,
+                        **constraint_kwarg,
+                    )
+
             # test generation logic
             q = 2
             mock_random_ics = torch.rand(num_restarts, q + num_fantasies, 2)
             mock_fantasy_cands = torch.ones(20, 1, 2)
             mock_fantasy_vals = torch.randn(20)
-            with ExitStack() as es:
-                mock_gbics = es.enter_context(
-                    mock.patch(
-                        "botorch.optim.initializers.gen_batch_initial_conditions",
-                        return_value=mock_random_ics,
+            for constraint_kwargs in [
+                {},
+                {
+                    "inequality_constraints": [
+                        (torch.tensor([0, 1]), torch.ones(2).to(mean), 0.5)
+                    ]
+                },  # test that no error is raised
+                {
+                    "equality_constraints": [
+                        (torch.tensor([0, 1]), torch.ones(2).to(mean), 0.5)
+                    ]
+                    # test that no error is raised
+                },
+            ]:
+                with ExitStack() as es:
+                    mock_gbics = es.enter_context(
+                        mock.patch(
+                            "botorch.optim.initializers.gen_batch_initial_conditions",
+                            return_value=mock_random_ics,
+                        )
                     )
-                )
-                mock_optacqf = es.enter_context(
-                    mock.patch(
-                        "botorch.optim.optimize.optimize_acqf",
-                        return_value=(mock_fantasy_cands, mock_fantasy_vals),
+                    mock_optacqf = es.enter_context(
+                        mock.patch(
+                            "botorch.optim.optimize.optimize_acqf",
+                            return_value=(mock_fantasy_cands, mock_fantasy_vals),
+                        )
                     )
-                )
-                ics = gen_one_shot_kg_initial_conditions(
-                    acq_function=mock_kg,
-                    bounds=bounds,
-                    q=q,
-                    num_restarts=num_restarts,
-                    raw_samples=raw_samples,
-                )
-                mock_gbics.assert_called_once()
-                mock_optacqf.assert_called_once()
-                n_value = int((1 - 0.1) * num_fantasies)
-                self.assertTrue(
-                    torch.equal(
-                        ics[..., :-n_value, :], mock_random_ics[..., :-n_value, :]
-                    )
-                )
-                self.assertTrue(torch.all(ics[..., -n_value:, :] == 1))
+                    with self.subTest(f"Main test with {constraint_kwargs}"):
+                        ics = gen_one_shot_kg_initial_conditions(
+                            acq_function=mock_kg,
+                            bounds=bounds,
+                            q=q,
+                            num_restarts=num_restarts,
+                            raw_samples=raw_samples,
+                            **constraint_kwargs,
+                        )
+                        mock_gbics.assert_called_once()
+                        mock_optacqf.assert_called_once()
+                        n_value = int((1 - 0.1) * num_fantasies)
+                        self.assertTrue(
+                            torch.equal(
+                                ics[..., :-n_value, :],
+                                mock_random_ics[..., :-n_value, :],
+                            )
+                        )
+                        self.assertTrue(torch.all(ics[..., -n_value:, :] == 1))
 
     def test_gen_optimal_input_initial_conditions(self):
         num_restarts = 10

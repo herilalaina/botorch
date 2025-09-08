@@ -47,7 +47,7 @@ from botorch.utils.transforms import is_ensemble
 from gpytorch.distributions import MultitaskMultivariateNormal, MultivariateNormal
 from gpytorch.likelihoods.gaussian_likelihood import FixedNoiseGaussianLikelihood
 from linear_operator.operators import BlockDiagLinearOperator, CatLinearOperator
-from torch import Tensor
+from torch import broadcast_shapes, Tensor
 
 if TYPE_CHECKING:
     from botorch.posteriors.posterior_list import PosteriorList  # pragma: no cover
@@ -231,10 +231,15 @@ class GPyTorchModel(Model, ABC):
 
         Example:
             >>> train_X = torch.rand(20, 2)
-            >>> train_Y = torch.sin(train_X[:, 0]) + torch.cos(train_X[:, 1])
+            >>> train_Y = torch.sin(train_X[:, :1]) + torch.cos(train_X[:, 1:])
             >>> model = SingleTaskGP(train_X, train_Y)
+            >>> model.eval()
+            >>> test_X = torch.rand(10, 2)
+            # Need to evaluate once to fill test independent caches
+            # so that condition_on_observations works.
+            >>> model(test_X)
             >>> new_X = torch.rand(5, 2)
-            >>> new_Y = torch.sin(new_X[:, 0]) + torch.cos(new_X[:, 1])
+            >>> new_Y = torch.sin(new_X[:, :1]) + torch.cos(new_X[:, 1:])
             >>> model = model.condition_on_observations(X=new_X, Y=new_Y)
         """
         Yvar = noise
@@ -779,44 +784,10 @@ class MultiTaskGPyTorchModel(GPyTorchModel, ABC):
     "long-format" multi-task GP in the style of `MultiTaskGP`.
     """
 
-    def _map_tasks(self, task_values: Tensor) -> Tensor:
-        """Map raw task values to the task indices used by the model.
-
-        Args:
-            task_values: A tensor of task values.
-
-        Returns:
-            A tensor of task indices with the same shape as the input
-                tensor.
-        """
-        if self._task_mapper is None:
-            if not (
-                torch.all(0 <= task_values) and torch.all(task_values < self.num_tasks)
-            ):
-                raise ValueError(
-                    "Expected all task features in `X` to be between 0 and "
-                    f"self.num_tasks - 1. Got {task_values}."
-                )
-        else:
-            task_values = task_values.long()
-
-            unexpected_task_values = set(task_values.unique().tolist()).difference(
-                self._expected_task_values
-            )
-            if len(unexpected_task_values) > 0:
-                raise ValueError(
-                    "Received invalid raw task values. Expected raw value to be in"
-                    f" {self._expected_task_values}, but got unexpected task values:"
-                    f" {unexpected_task_values}."
-                )
-            task_values = self._task_mapper[task_values]
-        return task_values
-
     def _apply_noise(
         self,
         X: Tensor,
         mvn: MultivariateNormal,
-        num_outputs: int,
         observation_noise: bool | Tensor,
     ) -> MultivariateNormal:
         """Adds the observation noise to the posterior.
@@ -858,15 +829,23 @@ class MultiTaskGPyTorchModel(GPyTorchModel, ABC):
             # get task features for training points
             train_task_features = self.train_inputs[0][..., self._task_feature]
             train_task_features = self._map_tasks(train_task_features).long()
-            noise_by_task = torch.zeros(self.num_tasks, dtype=X.dtype, device=X.device)
+            noise_by_task = torch.zeros(
+                *self.batch_shape, self.num_tasks, dtype=X.dtype, device=X.device
+            )
             for task_feature in unique_test_task_features:
                 mask = train_task_features == task_feature
-                noise_by_task[task_feature] = self.likelihood.noise[mask].mean(
-                    dim=-1, keepdim=True
-                )
+                noise_by_task[..., task_feature] = self.likelihood.noise[
+                    ..., mask
+                ].mean(dim=-1)
             # noise_shape is `broadcast(test_batch_shape, model.batch_shape) x q`
-            noise_shape = X.shape[:-1]
-            observation_noise = noise_by_task[test_task_features].expand(noise_shape)
+            noise_shape = (
+                broadcast_shapes(X.shape[:-2], self.batch_shape) + X.shape[-2:-1]
+            )
+            # Expand and gather ensures we pick correct noise dimensions for
+            # batch evaluations of batched models.
+            observation_noise = noise_by_task.expand(*noise_shape[:-1], -1).gather(
+                dim=-1, index=test_task_features.expand(noise_shape)
+            )
             return self.likelihood(
                 mvn,
                 X,
@@ -940,7 +919,6 @@ class MultiTaskGPyTorchModel(GPyTorchModel, ABC):
             mvn = self._apply_noise(
                 X=X_full,
                 mvn=mvn,
-                num_outputs=num_outputs,
                 observation_noise=observation_noise,
             )
         # If single-output, return the posterior of a single-output model
