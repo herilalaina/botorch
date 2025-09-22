@@ -38,7 +38,7 @@ from botorch.exceptions.errors import (
 from botorch.exceptions.warnings import UserInputWarning
 from botorch.sampling.qmc import NormalQMCEngine
 
-from botorch.utils.transforms import normalize, standardize, unnormalize
+from botorch.utils.transforms import normalize, unnormalize
 from scipy.spatial import Delaunay, HalfspaceIntersection
 from torch import LongTensor, Tensor
 from torch.distributions import Normal
@@ -1097,11 +1097,13 @@ def boltzmann_sample(
             succesively decreased by 'temp_decrease'.
         replacement: If True, samples are drawn with replacement, allowing duplicates.
         temp_decrease: The rate at which temperature decreases in case of inf weights.
-
-        Returns:
+    Returns:
         A [batch_shape] x num_samples tensor of indices of sampled positions.
     """
-    norm_weights = standardize(function_values)
+    # standardize() is not used since function_values may be more than 2D
+    norm_weights = (
+        function_values - function_values.mean(dim=-1, keepdim=True)
+    ) / function_values.std(dim=-1, keepdim=True)
     weights = torch.exp(eta * norm_weights)
     while torch.isinf(weights).any():
         eta *= temp_decrease
