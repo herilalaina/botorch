@@ -87,6 +87,7 @@ class MaxValueBase(AcquisitionFunction, ABC):
         maximize: bool = True,
         X_pending: Tensor | None = None,
         input_max_values: Tensor | None = None,
+        train_inputs: Tensor | None = None,
     ) -> None:
         r"""Single-outcome max-value entropy search-based acquisition functions
         based on discrete MV sampling.
@@ -135,13 +136,13 @@ class MaxValueBase(AcquisitionFunction, ABC):
         self.use_gumbel = use_gumbel
         self.maximize = maximize
         self.weight = 1.0 if maximize else -1.0
-<<<<<<< Updated upstream
-
+        self.input_max_values = input_max_values
         # NOTE X_pending is not really needed to make the parallelism work here,
         # it just makes the approximation of the max values slightly more accurate.
-            self.num_models = self.input_max_values.shape[1]
 
->>>>>>> Stashed changes
+        if self.input_max_values is not None:
+            self.num_samples = self.input_max_values.shape[0]
+            self.num_models = self.input_max_values.shape[1]
 
     @t_batch_mode_transform(expected_q=1)
     @average_over_ensemble_models
