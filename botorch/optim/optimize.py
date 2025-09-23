@@ -20,10 +20,19 @@ from botorch.acquisition.acquisition import (
     AcquisitionFunction,
     OneShotAcquisitionFunction,
 )
+from botorch.acquisition.joint_entropy_search import qJointEntropySearch
 from botorch.acquisition.knowledge_gradient import qKnowledgeGradient
 from botorch.acquisition.multi_objective.hypervolume_knowledge_gradient import (
     qHypervolumeKnowledgeGradient,
 )
+from botorch.acquisition.multi_objective.joint_entropy_search import (
+    qLowerBoundMultiObjectiveJointEntropySearch,
+)
+from botorch.acquisition.multi_objective.predictive_entropy_search import (
+    qMultiObjectivePredictiveEntropySearch,
+)
+
+from botorch.acquisition.predictive_entropy_search import qPredictiveEntropySearch
 from botorch.exceptions import InputDataError, UnsupportedError
 from botorch.exceptions.errors import CandidateGenerationError
 from botorch.exceptions.warnings import OptimizationWarning
@@ -33,9 +42,13 @@ from botorch.optim.initializers import (
     gen_batch_initial_conditions,
     gen_one_shot_hvkg_initial_conditions,
     gen_one_shot_kg_initial_conditions,
+    gen_optimal_input_initial_conditions,
     TGenInitialConditions,
 )
-from botorch.optim.parameter_constraints import evaluate_feasibility
+from botorch.optim.parameter_constraints import (
+    evaluate_feasibility,
+    project_to_feasible_space_via_slsqp,
+)
 from botorch.optim.stopping import ExpMAStoppingCriterion
 from torch import Tensor
 
@@ -185,6 +198,16 @@ class OptimizeAcqfInputs:
             return gen_one_shot_kg_initial_conditions
         elif isinstance(self.acq_function, qHypervolumeKnowledgeGradient):
             return gen_one_shot_hvkg_initial_conditions
+        elif isinstance(
+            self.acq_function,
+            (
+                qJointEntropySearch,
+                qPredictiveEntropySearch,
+                qMultiObjectivePredictiveEntropySearch,
+                qLowerBoundMultiObjectiveJointEntropySearch,
+            ),
+        ):
+            return gen_optimal_input_initial_conditions
         return gen_batch_initial_conditions
 
 
@@ -513,15 +536,47 @@ def _optimize_acqf_batch(opt_inputs: OptimizeAcqfInputs) -> tuple[Tensor, Tensor
 
     # SLSQP can sometimes fail to produce a feasible candidate. Check for
     # feasibility and error out if necessary.
+    # if there are equality constraints, project the candidate to the feasible set
+    equality_constraints = gen_kwargs.get("equality_constraints")
+    inequality_constraints = gen_kwargs.get("inequality_constraints")
+    nonlinear_inequality_constraints = gen_kwargs.get(
+        "nonlinear_inequality_constraints"
+    )
     is_feasible = evaluate_feasibility(
         X=batch_candidates,
-        inequality_constraints=gen_kwargs.get("inequality_constraints"),
-        equality_constraints=gen_kwargs.get("equality_constraints"),
-        nonlinear_inequality_constraints=gen_kwargs.get(
-            "nonlinear_inequality_constraints"
-        ),
+        inequality_constraints=inequality_constraints,
+        equality_constraints=equality_constraints,
+        nonlinear_inequality_constraints=nonlinear_inequality_constraints,
     )
     infeasible = ~is_feasible
+    if nonlinear_inequality_constraints is None and infeasible.any():
+        projected_candidates = project_to_feasible_space_via_slsqp(
+            X=batch_candidates[infeasible],
+            bounds=opt_inputs.bounds,
+            equality_constraints=equality_constraints,
+            inequality_constraints=inequality_constraints,
+        )
+        if opt_inputs.post_processing_func is not None:
+            projected_candidates = opt_inputs.post_processing_func(projected_candidates)
+        batch_candidates[infeasible] = projected_candidates
+        # recompute AF values for projected points
+        with torch.no_grad():
+            batch_acq_values[infeasible] = torch.cat(
+                [
+                    opt_inputs.acq_function(cand)
+                    for cand in projected_candidates.split(batch_limit, dim=0)
+                ],
+                dim=0,
+            )
+        # re-evaluate feasibility
+        is_feasible = evaluate_feasibility(
+            X=batch_candidates,
+            inequality_constraints=inequality_constraints,
+            equality_constraints=equality_constraints,
+            nonlinear_inequality_constraints=nonlinear_inequality_constraints,
+        )
+        infeasible = ~is_feasible
+
     if (opt_inputs.return_best_only and (not is_feasible.any())) or infeasible.all():
         raise CandidateGenerationError(
             f"The optimizer produced infeasible candidates. "

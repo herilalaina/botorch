@@ -50,11 +50,6 @@ MC_ADD_TERM = 0.5 * (1 + log(2 * pi))
 # The CDF query cannot be strictly zero in the division
 # and this clamping helps assure that it is always positive.
 CLAMP_LB = torch.finfo(torch.float32).eps
-FULLY_BAYESIAN_ERROR_MSG = (
-    "JES is not yet available with Fully Bayesian GPs. Track the issue, "
-    "which regards conditioning on a number of optima on a collection "
-    "of models, in detail at https://github.com/pytorch/botorch/issues/1680"
-)
 
 
 class qJointEntropySearch(AcquisitionFunction, MCSamplerMixin):
@@ -128,8 +123,6 @@ class qJointEntropySearch(AcquisitionFunction, MCSamplerMixin):
         # and the optimal outputs have shapes num_optima x [num_models if FB] x 1 x 1
         # The third dimension equaling 1 is required to get one optimum per model,
         # which raises a BotorchTensorDimensionWarning.
-        if isinstance(model, FullyBayesianSingleTaskGP):
-            raise NotImplementedError(FULLY_BAYESIAN_ERROR_MSG)
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore")
             with fantasize_flag():
