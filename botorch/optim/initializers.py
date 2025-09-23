@@ -718,35 +718,6 @@ def gen_one_shot_hvkg_initial_conditions(
         as well as all `q` candidate points are chosen according to the standard
         initialization strategy in `gen_batch_initial_conditions`.
 
-<<<<<<< Updated upstream
-    Args:
-        acq_function: The qKnowledgeGradient instance to be optimized.
-        bounds: A `2 x d` tensor of lower and upper bounds for each column of
-            task features.
-        q: The number of candidates to consider.
-        num_restarts: The number of starting points for multistart acquisition
-            function optimization.
-        raw_samples: The number of raw samples to consider in the initialization
-            heuristic.
-        fixed_features: A map `{feature_index: value}` for features that
-            should be fixed to a particular value during generation.
-        options: Options for initial condition generation. These contain all
-            settings for the standard heuristic initialization from
-            `gen_batch_initial_conditions`. In addition, they contain
-            `frac_random` (the fraction of fully random fantasy points),
-            `num_inner_restarts` and `raw_inner_samples` (the number of random
-            restarts and raw samples for solving the posterior objective
-            maximization problem, respectively) and `eta` (temperature parameter
-            for sampling heuristic from posterior objective maximizers).
-        inequality constraints: Optionally, list of tuples (indices, coefficients, rhs),
-            with each tuple encoding an inequality constraint of the form
-            `\sum_i (X[indices[i]] * coefficients[i]) >= rhs`. Each
-            tensor of indices must be one-dimensional, since inter-point
-            constraints are not supported here.
-        equality constraints: Optionally, a list of tuples (indices, coefficients, rhs),
-            with each tuple encoding an inequality constraint of the form
-            `\sum_i (X[indices[i]] * coefficients[i]) = rhs`.
-=======
         Args:
             acq_function: The qKnowledgeGradient instance to be optimized.
             bounds: A `2 x d` tensor of lower and upper bounds for each column of
@@ -772,7 +743,6 @@ def gen_one_shot_hvkg_initial_conditions(
             equality constraints: A list of tuples (indices, coefficients, rhs),
                 with each tuple encoding an inequality constraint of the form
                 `\sum_i (X[indices[i]] * coefficients[i]) = rhs`.
->>>>>>> Stashed changes
 
         Returns:
             A `num_restarts x q' x d` tensor that can be used as initial conditions
